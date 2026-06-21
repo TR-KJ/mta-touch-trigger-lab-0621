@@ -23,3 +23,20 @@
 - TradingView実機で動作確認済み
 - ランタイムエラーなし
 - 目視上の挙動に大きな問題なし
+
+## v1.1 - 2026-06-21
+
+### Added
+
+- Touch Trigger専用アラート入力を追加
+- `SETUP L` 専用アラートを追加
+- `SETUP S` 専用アラートを追加
+- `ENTRY L` 専用アラートを追加
+- `ENTRY S` 専用アラートを追加
+- `alertcondition()` によりTradingViewのアラート作成画面で個別条件を選択可能にした
+
+### Notes
+
+- 既存のMTA発生/終了アラートは維持
+- v1.0のSETUP/ENTRY判定ロジックは変更なし
+- `strategy.entry` / `strategy.exit` は未実装
