@@ -40,3 +40,30 @@
 - 既存のMTA発生/終了アラートは維持
 - v1.0のSETUP/ENTRY判定ロジックは変更なし
 - `strategy.entry` / `strategy.exit` は未実装
+
+## v1.1 - 2026-06-21
+
+### Added
+
+- Touch Trigger専用アラート入力を追加
+- `TT SETUP L` の `alertcondition()` を追加
+- `TT SETUP S` の `alertcondition()` を追加
+- `TT ENTRY L` の `alertcondition()` を追加
+- `TT ENTRY S` の `alertcondition()` を追加
+- `alert()` による動的メッセージ付きアラートを追加
+- SETUPアラートでMTA価格とトリガー価格を通知
+- ENTRYアラートでENTRY価格とMTA価格を通知
+
+### Verified
+
+- TradingViewのアラート条件に以下が表示されることを確認
+  - `TT SETUP L`
+  - `TT SETUP S`
+  - `TT ENTRY L`
+  - `TT ENTRY S`
+
+### Notes
+
+- 既存のMTA発生/終了アラートは維持
+- v1.0のSETUP/ENTRY判定ロジックは変更なし
+- strategy版は未実装
