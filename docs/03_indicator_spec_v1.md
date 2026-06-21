@@ -555,3 +555,251 @@ EMA20回復トリガー追加
 strategy版作成
 SL/TP/RR検証
 ```
+
+# docs/03_indicator_spec_v1.md 追記分
+
+---
+
+## 20. v1.1 追加仕様：Touch Trigger専用アラート
+
+v1.1では、既存のMTA発生/終了アラートとは別に、Touch Trigger専用アラートを追加した。
+
+### 追加したアラート条件
+
+```text
+TT SETUP L
+TT SETUP S
+TT ENTRY L
+TT ENTRY S
+```
+
+### 目的
+
+MTAそのものの発生/終了ではなく、手法上のセットアップおよびエントリー候補を個別に通知できるようにする。
+
+---
+
+### SETUPアラート
+
+#### TT SETUP L
+
+Long Setup発生時に通知する。
+
+条件。
+
+```text
+15分MTAが上昇状態
+かつ
+1分足が15分MTAに接触
+```
+
+#### TT SETUP S
+
+Short Setup発生時に通知する。
+
+条件。
+
+```text
+15分MTAが下降状態
+かつ
+1分足が15分MTAに接触
+```
+
+---
+
+### ENTRYアラート
+
+#### TT ENTRY L
+
+Long Entry候補発生時に通知する。
+
+条件。
+
+```text
+Long Setup発生後、
+選択中のトリガー方式でLong Entry条件が成立
+```
+
+#### TT ENTRY S
+
+Short Entry候補発生時に通知する。
+
+条件。
+
+```text
+Short Setup発生後、
+選択中のトリガー方式でShort Entry条件が成立
+```
+
+---
+
+### alertcondition
+
+TradingViewのアラート作成画面で、以下の条件を個別に選択できる。
+
+```pine
+alertcondition(longSetupSignal, title = 'TT SETUP L', message = '{{ticker}} Touch Trigger SETUP L')
+alertcondition(shortSetupSignal, title = 'TT SETUP S', message = '{{ticker}} Touch Trigger SETUP S')
+alertcondition(longEntrySignal, title = 'TT ENTRY L', message = '{{ticker}} Touch Trigger ENTRY L')
+alertcondition(shortEntrySignal, title = 'TT ENTRY S', message = '{{ticker}} Touch Trigger ENTRY S')
+```
+
+---
+
+## 21. v1.2 追加仕様：トリガー方式選択
+
+v1.2では、ENTRYトリガー方式を選択式にした。
+
+### 追加したトリガー方式
+
+```text
+Setup Candle Break
+EMA Reclaim
+LTF Pivot Break
+```
+
+---
+
+### 21.1 Setup Candle Break
+
+v1.0からの標準トリガー。
+
+#### Long
+
+```text
+Long Setup発生後、
+1分足終値がセットアップ足高値を上抜け
+```
+
+#### Short
+
+```text
+Short Setup発生後、
+1分足終値がセットアップ足安値を下抜け
+```
+
+### 役割
+
+最もシンプルな価格ブレイク系トリガー。
+
+他トリガー方式と比較するための基準条件として扱う。
+
+---
+
+### 21.2 EMA Reclaim
+
+選択EMAを使った回復/割れトリガー。
+
+#### 追加入力
+
+```pine
+emaLen = input.int(20, 'EMA期間', minval = 1, group = 'EMA Reclaim')
+showEma = input.bool(true, 'EMA表示', group = 'EMA Reclaim')
+```
+
+#### Long
+
+```text
+Long Setup発生後、
+1分足終値がEMAを下から上へ回復
+```
+
+条件。
+
+```text
+close > EMA
+かつ
+close[1] <= EMA[1]
+```
+
+#### Short
+
+```text
+Short Setup発生後、
+1分足終値がEMAを上から下へ割り込み
+```
+
+条件。
+
+```text
+close < EMA
+かつ
+close[1] >= EMA[1]
+```
+
+### 役割
+
+MTA接触後に、短期的な戻り・反転の勢いが出たかを確認するトリガー。
+
+EMA期間は検証用に変更可能。
+
+---
+
+### 21.3 LTF Pivot Break
+
+1分足の直近ピボット高値/安値を使った構造系トリガー。
+
+#### 追加入力
+
+```pine
+pivotLeft = input.int(3, 'Pivot Left', minval = 1, group = 'LTF Pivot Break')
+pivotRight = input.int(3, 'Pivot Right', minval = 1, group = 'LTF Pivot Break')
+```
+
+#### Long
+
+```text
+Long Setup発生時点で保存した直近1分ピボット高値を、
+1分足終値が上抜け
+```
+
+#### Short
+
+```text
+Short Setup発生時点で保存した直近1分ピボット安値を、
+1分足終値が下抜け
+```
+
+### 役割
+
+単純なローソク足ブレイクではなく、下位足の小さな構造転換をトリガーとして扱う。
+
+---
+
+## 22. v1.2 実機確認結果
+
+v1.2では以下をTradingView実機で確認済み。
+
+```text
+1. Setup Candle Break でv1.1同様に動作
+2. EMA Reclaim でEMA線が表示される
+3. EMA期間変更によりENTRY位置が変化する
+4. LTF Pivot Break でPivot L/R変更によりENTRY位置が変化する
+5. TT SETUP / TT ENTRY アラート条件がTradingView上に表示される
+```
+
+### 判定
+
+```text
+v1.2 仮合格
+```
+
+---
+
+## 23. strategy版への移行方針
+
+v1.2のインジケーター仕様をベースに、次段階としてstrategy版を作成する。
+
+strategy版では、以下を追加する。
+
+```text
+strategy.entry
+strategy.exit
+SL設定
+TP設定
+RR設定
+2%リスクベースの数量計算
+手数料・スリッページ設定
+```
+
+ただし、MTA検出ロジック、SETUP判定、トリガー判定の基本構造は変更しない。
