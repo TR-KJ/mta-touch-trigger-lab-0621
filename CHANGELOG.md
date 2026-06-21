@@ -67,3 +67,36 @@
 - 既存のMTA発生/終了アラートは維持
 - v1.0のSETUP/ENTRY判定ロジックは変更なし
 - strategy版は未実装
+
+## v1.2 - 2026-06-21
+
+### Added
+
+- トリガー方式を選択式に変更
+- `Setup Candle Break` を追加
+  - 接触足高値/安値ブレイク
+- `EMA Reclaim` を追加
+  - EMA期間を入力で変更可能
+  - EMA線の表示ON/OFFを追加
+- `LTF Pivot Break` を追加
+  - Pivot Left / Pivot Right を入力で変更可能
+  - セットアップ時点の直近ピボット高値/安値を保存してトリガーに使用
+
+### Verified
+
+- `Setup Candle Break` でv1.1同様に動作することを確認
+- `EMA Reclaim` でEMA線が表示されることを確認
+- EMA期間変更によりENTRY位置が変化することを確認
+- `LTF Pivot Break` でPivot L/R変更によりENTRY位置が変化することを確認
+- `TT SETUP L`
+- `TT SETUP S`
+- `TT ENTRY L`
+- `TT ENTRY S`
+  のアラート条件がTradingView上で表示されることを確認
+
+### Notes
+
+- MTA検出ロジックは変更なし
+- SETUP判定ロジックは維持
+- 既存のTouch Triggerアラートは維持
+- strategy版は未実装
