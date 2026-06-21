@@ -1,0 +1,662 @@
+//@version=5
+strategy('MTA Touch Trigger Strategy v1.0', overlay = true, max_lines_count = 500, max_labels_count = 500, initial_capital = 1000000, default_qty_type = strategy.fixed, default_qty_value = 1, commission_type = strategy.commission.percent, commission_value = 0.04, slippage = 2, pyramiding = 0, process_orders_on_close = false, calc_on_every_tick = false)
+
+import DevLucem/ZigLib/1 as ZigZag
+
+Depth     = input.int(3, '深さ', minval = 1, step = 1, inline = 'zz1', group = 'ZigZag')
+Deviation = input.int(5, '偏差', minval = 1, step = 1, inline = 'zz1', group = 'ZigZag')
+Backstep  = input.int(3, 'Backstep', minval = 2, step = 1, inline = 'zz2', group = 'ZigZag')
+lineThick = input.int(2, '線太さ', minval = 1, maxval = 4, inline = 'zz2', group = 'ZigZag')
+showZZ    = input.bool(true, 'ZZ線', inline = 'zz3', group = 'ZigZag')
+upColor   = input.color(color.lime, '↑', inline = 'zz3', group = 'ZigZag')
+dnColor   = input.color(color.red, '↓', inline = 'zz3', group = 'ZigZag')
+
+showChart = input.bool(false, 'チャート足', inline = 'm1', group = 'MTA表示')
+showSel   = input.bool(true, '選択足', inline = 'm1', group = 'MTA表示')
+selTFin   = input.timeframe('15', '選択足TF', inline = 'm2', group = 'MTA表示')
+lblOff    = input.int(10, 'ラベルOFS', minval = 0, inline = 'm2', group = 'MTA表示')
+
+cUp   = input.color(color.blue, 'チャート足↑', inline = 'c1', group = 'MTAの色')
+cDn   = input.color(color.red, '↓', inline = 'c1', group = 'MTAの色')
+sUp   = input.color(color.aqua, '選択足↑', inline = 'c2', group = 'MTAの色')
+sDn   = input.color(color.fuchsia, '↓', inline = 'c2', group = 'MTAの色')
+trCol = input.color(color.gray, '残置', inline = 'c2', group = 'MTAの色')
+
+enableTouchSetup = input.bool(true, 'MTA接触セットアップ', inline = 'tt1', group = 'Touch Trigger')
+expireBars       = input.int(60, '有効本数', minval = 1, inline = 'tt1', group = 'Touch Trigger')
+showSetupLabel   = input.bool(true, 'SETUP', inline = 'tt2', group = 'Touch Trigger')
+showEntryLabel   = input.bool(true, 'ENTRY', inline = 'tt2', group = 'Touch Trigger')
+showExpireLabel  = input.bool(true, 'EXPIRE', inline = 'tt3', group = 'Touch Trigger')
+showTriggerLine  = input.bool(true, 'トリガーライン', inline = 'tt3', group = 'Touch Trigger')
+showTradeLines   = input.bool(true, 'SL/TPライン', inline = 'tt6', group = 'Touch Trigger')
+setupLongColor   = input.color(color.lime, 'L色', inline = 'tt4', group = 'Touch Trigger')
+setupShortColor  = input.color(color.red, 'S色', inline = 'tt4', group = 'Touch Trigger')
+entryLongColor   = input.color(color.blue, 'Entry L', inline = 'tt5', group = 'Touch Trigger')
+entryShortColor  = input.color(color.orange, 'Entry S', inline = 'tt5', group = 'Touch Trigger')
+
+triggerMode = input.string('Setup Candle Break', 'トリガー方式', options = ['Setup Candle Break', 'EMA Reclaim', 'LTF Pivot Break'], group = 'Trigger Mode')
+emaLen      = input.int(20, 'EMA期間', minval = 1, group = 'EMA Reclaim')
+showEma     = input.bool(true, 'EMA表示', group = 'EMA Reclaim')
+pivotLeft   = input.int(3, 'Pivot Left', minval = 1, group = 'LTF Pivot Break')
+pivotRight  = input.int(3, 'Pivot Right', minval = 1, group = 'LTF Pivot Break')
+
+rr          = input.float(1.5, 'RR', minval = 0.1, step = 0.1, group = 'Strategy Risk')
+riskPct     = input.float(2.0, '1回リスク％', minval = 0.1, step = 0.1, group = 'Strategy Risk')
+minRiskTick = input.int(1, '最小SL幅 ticks', minval = 1, group = 'Strategy Risk')
+
+almTT       = input.bool(true, 'TTアラート', inline = 'ta1', group = 'Touch Trigger Alert')
+almTTSetup  = input.bool(true, 'SETUP', inline = 'ta1', group = 'Touch Trigger Alert')
+almTTEntry  = input.bool(true, 'ENTRY', inline = 'ta1', group = 'Touch Trigger Alert')
+almTTLong   = input.bool(true, 'Long', inline = 'ta2', group = 'Touch Trigger Alert')
+almTTShort  = input.bool(true, 'Short', inline = 'ta2', group = 'Touch Trigger Alert')
+
+almChart = input.bool(true, 'チャート足', inline = 'a1', group = 'アラート')
+almSel   = input.bool(true, '選択足', inline = 'a1', group = 'アラート')
+almOccur = input.bool(true, '発生', inline = 'a2', group = 'アラート')
+almBreak = input.bool(true, 'ブレイク', inline = 'a2', group = 'アラート')
+almUp    = input.bool(true, '上昇系', inline = 'a3', group = 'アラート')
+almDn    = input.bool(true, '下降系', inline = 'a3', group = 'アラート')
+
+emaVal = ta.ema(close, emaLen)
+plot(showEma ? emaVal : na, title = 'Trigger EMA', color = color.new(color.yellow, 0), linewidth = 1)
+
+phRaw = ta.pivothigh(high, pivotLeft, pivotRight)
+plRaw = ta.pivotlow(low, pivotLeft, pivotRight)
+
+var float lastPivotHigh = na
+var float lastPivotLow  = na
+
+if not na(phRaw)
+    lastPivotHigh := phRaw
+
+if not na(plRaw)
+    lastPivotLow := plRaw
+
+f_tfJP(string tf) =>
+    s = timeframe.in_seconds(tf)
+    m = s / 60
+    out = tf
+    if m < 60
+        out := str.tostring(m) + '分足'
+    else if m < 1440
+        out := str.tostring(m / 60) + '時間足'
+    else if m < 10080
+        out := str.tostring(m / 1440) + '日足'
+    else if m < 43200
+        out := str.tostring(m / 10080) + '週足'
+    else
+        out := str.tostring(m / 43200) + 'ヶ月足'
+    out
+
+f_mtaCalc() =>
+    [direction, z1, z2] = ZigZag.zigzag(low, high, Depth, Deviation, Backstep)
+
+    zpx = z2.price
+    zix = z2.index
+    ztm = z2.time
+
+    var array<float> zP = array.new_float()
+    var array<bool>  zH = array.new_bool()
+    var array<int>   zB = array.new_int()
+    var array<int>   zT = array.new_int()
+
+    if not na(direction) and not na(direction[1]) and direction != direction[1]
+        pPrice = zpx[1]
+        pBar   = na(zix[1]) ? -1 : int(zix[1])
+        pTime  = na(ztm[1]) ? -1 : int(ztm[1])
+        pHigh  = direction[1] > 0
+
+        if not na(pPrice) and pBar >= 0
+            if array.size(zP) == 0
+                array.push(zP, pPrice)
+                array.push(zH, pHigh)
+                array.push(zB, pBar)
+                array.push(zT, pTime)
+            else if pBar > array.last(zB)
+                li = array.size(zP) - 1
+                if array.last(zH) == pHigh
+                    prevP  = array.last(zP)
+                    better = pHigh ? pPrice > prevP : pPrice < prevP
+                    if better
+                        array.set(zP, li, pPrice)
+                        array.set(zB, li, pBar)
+                        array.set(zT, li, pTime)
+                else
+                    array.push(zP, pPrice)
+                    array.push(zH, pHigh)
+                    array.push(zB, pBar)
+                    array.push(zT, pTime)
+
+    var int   trend   = 0
+    var float aPx     = na
+    var int   aBar    = -1
+    var float mta     = na
+    var int   mtaTime = -1
+
+    n1 = math.min(array.size(zP), array.size(zH))
+    n2 = math.min(array.size(zB), array.size(zT))
+    n = math.min(n1, n2)
+
+    if trend == 0 and n >= 3
+        if not array.get(zH, n - 1)
+            a1P = array.get(zP, n - 3)
+            h1P = array.get(zP, n - 2)
+            a2P = array.get(zP, n - 1)
+            if a2P > a1P and close > h1P
+                trend   := 1
+                aPx     := h1P
+                aBar    := array.get(zB, n - 2)
+                mta     := a2P
+                mtaTime := array.get(zT, n - 1)
+
+        if trend == 0 and array.get(zH, n - 1)
+            h1P = array.get(zP, n - 3)
+            l1P = array.get(zP, n - 2)
+            h2P = array.get(zP, n - 1)
+            if h2P < h1P and close < l1P
+                trend   := -1
+                aPx     := l1P
+                aBar    := array.get(zB, n - 2)
+                mta     := h2P
+                mtaTime := array.get(zT, n - 1)
+
+    if trend == 1
+        if not na(mta) and close < mta
+            trend := 0
+            aPx   := na
+            aBar  := -1
+        else if not na(aPx) and close > aPx
+            bIdx = -1
+
+            for j = 0 to n - 1 by 1
+                if array.get(zH, j) and array.get(zB, j) > aBar and array.get(zP, j) > aPx
+                    bIdx := j
+
+            if bIdx >= 0
+                nlo = float(na)
+                nix = -1
+                bB  = array.get(zB, bIdx)
+
+                for j = 0 to n - 1 by 1
+                    if not array.get(zH, j) and array.get(zB, j) > aBar and array.get(zB, j) < bB
+                        if na(nlo) or array.get(zP, j) < nlo
+                            nlo := array.get(zP, j)
+                            nix := j
+
+                if nix != -1
+                    mta     := nlo
+                    mtaTime := array.get(zT, nix)
+                    aPx     := array.get(zP, bIdx)
+                    aBar    := bB
+            else
+                rlo = float(na)
+                rix = -1
+
+                for j = 0 to n - 1 by 1
+                    if not array.get(zH, j) and array.get(zB, j) > aBar
+                        if na(rlo) or array.get(zP, j) < rlo
+                            rlo := array.get(zP, j)
+                            rix := j
+
+                if rix != -1 and (na(mta) or rlo != mta)
+                    mta     := rlo
+                    mtaTime := array.get(zT, rix)
+
+    if trend == -1
+        if not na(mta) and close > mta
+            trend := 0
+            aPx   := na
+            aBar  := -1
+        else if not na(aPx) and close < aPx
+            bIdx = -1
+
+            for j = 0 to n - 1 by 1
+                if (not array.get(zH, j)) and array.get(zB, j) > aBar and array.get(zP, j) < aPx
+                    bIdx := j
+
+            if bIdx >= 0
+                nhi = float(na)
+                nix = -1
+                bB  = array.get(zB, bIdx)
+
+                for j = 0 to n - 1 by 1
+                    if array.get(zH, j) and array.get(zB, j) > aBar and array.get(zB, j) < bB
+                        if na(nhi) or array.get(zP, j) > nhi
+                            nhi := array.get(zP, j)
+                            nix := j
+
+                if nix != -1
+                    mta     := nhi
+                    mtaTime := array.get(zT, nix)
+                    aPx     := array.get(zP, bIdx)
+                    aBar    := bB
+            else
+                rhi = float(na)
+                rix = -1
+
+                for j = 0 to n - 1 by 1
+                    if array.get(zH, j) and array.get(zB, j) > aBar
+                        if na(rhi) or array.get(zP, j) > rhi
+                            rhi := array.get(zP, j)
+                            rix := j
+
+                if rix != -1 and (na(mta) or rhi != mta)
+                    mta     := rhi
+                    mtaTime := array.get(zT, rix)
+
+    ended = trend == 0 and not na(mta)
+
+    [mta, trend, mtaTime, ended]
+
+selTF = selTFin == '' ? timeframe.period : selTFin
+
+[cM, cTr, cMt, cEnd] = request.security(syminfo.tickerid, timeframe.period, f_mtaCalc(), lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+[sM, sTr, sMt, sEnd] = request.security(syminfo.tickerid, selTF, f_mtaCalc(), lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+
+sym = syminfo.ticker
+
+[cdir, cz1, cz2] = ZigZag.zigzag(low, high, Depth, Deviation, Backstep)
+
+var line zz = na
+
+if showZZ
+    zz := line.new(cz1, cz2, xloc.bar_time, extend.none, color.new(cdir > 0 ? upColor : dnColor, 0), width = lineThick)
+    if not na(zz[1])
+        if cdir == cdir[1]
+            line.delete(zz[1])
+        else
+            line.set_extend(zz[1], extend.none)
+
+var line  lC = na
+var label bC = na
+
+if showChart and not na(cM) and not na(cMt) and cMt > 0
+    col = cTr == 1 ? cUp : cTr == -1 ? cDn : trCol
+    st  = cTr == 1 ? label.style_label_up : label.style_label_down
+    ln  = cEnd ? line.style_dotted : line.style_solid
+
+    if na(lC)
+        lC := line.new(cMt, cM, cMt + 1, cM, xloc = xloc.bar_time, extend = extend.right, color = col, width = 2, style = ln)
+    else
+        line.set_xy1(lC, cMt, cM)
+        line.set_xy2(lC, cMt + 1, cM)
+        line.set_color(lC, col)
+        line.set_style(lC, ln)
+
+    if na(bC)
+        bC := label.new(time, cM, 'MTA', xloc = xloc.bar_time, yloc = yloc.price, style = st, color = color.new(color.white, 100), textcolor = col, size = size.small)
+    else
+        label.set_xy(bC, time + lblOff * (timeframe.in_seconds() * 1000), cM)
+        label.set_text(bC, 'MTA')
+        label.set_textcolor(bC, col)
+        label.set_style(bC, st)
+else
+    if not na(lC)
+        line.delete(lC)
+        lC := na
+
+    if not na(bC)
+        label.delete(bC)
+        bC := na
+
+var line  lS = na
+var label bS = na
+
+if showSel and not na(sM) and not na(sMt) and sMt > 0
+    col2 = sTr == 1 ? sUp : sTr == -1 ? sDn : trCol
+    st2  = sTr == 1 ? label.style_label_up : label.style_label_down
+    ln2  = sEnd ? line.style_dotted : line.style_solid
+    txt2 = 'MTA ' + f_tfJP(selTF)
+
+    if na(lS)
+        lS := line.new(sMt, sM, sMt + 1, sM, xloc = xloc.bar_time, extend = extend.right, color = col2, width = 3, style = ln2)
+    else
+        line.set_xy1(lS, sMt, sM)
+        line.set_xy2(lS, sMt + 1, sM)
+        line.set_color(lS, col2)
+        line.set_style(lS, ln2)
+
+    if na(bS)
+        bS := label.new(time, sM, txt2, xloc = xloc.bar_time, yloc = yloc.price, style = st2, color = color.new(color.white, 100), textcolor = col2, size = size.small)
+    else
+        label.set_xy(bS, time + lblOff * (timeframe.in_seconds() * 1000), sM)
+        label.set_text(bS, txt2)
+        label.set_textcolor(bS, col2)
+        label.set_style(bS, st2)
+else
+    if not na(lS)
+        line.delete(lS)
+        lS := na
+
+    if not na(bS)
+        label.delete(bS)
+        bS := na
+
+var bool  waitingTrigger  = false
+var int   setupDir        = 0
+var int   setupBar        = na
+var int   setupTime       = na
+var float setupMta        = na
+var float setupHigh       = na
+var float setupLow        = na
+var float setupPivotHigh  = na
+var float setupPivotLow   = na
+var line  setupTrigLine   = na
+var line  tradeStopLine   = na
+var line  tradeLimitLine  = na
+
+isSelEnded = false
+if not na(sEnd)
+    if sEnd
+        isSelEnded := true
+
+mtaTouched = false
+if not na(sM)
+    if low <= sM
+        if high >= sM
+            mtaTouched := true
+
+flatPosition = false
+if strategy.position_size == 0
+    flatPosition := true
+
+longSetupSignal = false
+shortSetupSignal = false
+
+if barstate.isconfirmed
+    if enableTouchSetup
+        if flatPosition
+            if not waitingTrigger
+                if mtaTouched
+                    if not isSelEnded
+                        if not na(sTr)
+                            if sTr == 1
+                                longSetupSignal := true
+                            if sTr == -1
+                                shortSetupSignal := true
+
+triggerLinePrice = float(na)
+
+if longSetupSignal
+    waitingTrigger := true
+    setupDir       := 1
+    setupBar       := bar_index
+    setupTime      := time
+    setupMta       := sM
+    setupHigh      := high
+    setupLow       := low
+    setupPivotHigh := lastPivotHigh
+    setupPivotLow  := lastPivotLow
+
+    if not na(setupTrigLine)
+        line.delete(setupTrigLine)
+        setupTrigLine := na
+
+    if triggerMode == 'Setup Candle Break'
+        triggerLinePrice := setupHigh
+
+    if triggerMode == 'LTF Pivot Break'
+        triggerLinePrice := setupPivotHigh
+
+    if showTriggerLine
+        if not na(triggerLinePrice)
+            setupTrigLine := line.new(bar_index, triggerLinePrice, bar_index + 1, triggerLinePrice, xloc = xloc.bar_index, extend = extend.right, color = setupLongColor, width = 1, style = line.style_dashed)
+
+    if showSetupLabel
+        label.new(bar_index, low, 'SETUP L', xloc = xloc.bar_index, yloc = yloc.belowbar, style = label.style_label_up, color = color.new(setupLongColor, 0), textcolor = color.white, size = size.small)
+
+    if almTT
+        if almTTSetup
+            if almTTLong
+                alert(sym + ' ' + f_tfJP(selTF) + ' Touch Trigger SETUP L / Mode ' + triggerMode + ' @MTA ' + str.tostring(setupMta), alert.freq_once_per_bar_close)
+
+if shortSetupSignal
+    waitingTrigger := true
+    setupDir       := -1
+    setupBar       := bar_index
+    setupTime      := time
+    setupMta       := sM
+    setupHigh      := high
+    setupLow       := low
+    setupPivotHigh := lastPivotHigh
+    setupPivotLow  := lastPivotLow
+
+    if not na(setupTrigLine)
+        line.delete(setupTrigLine)
+        setupTrigLine := na
+
+    if triggerMode == 'Setup Candle Break'
+        triggerLinePrice := setupLow
+
+    if triggerMode == 'LTF Pivot Break'
+        triggerLinePrice := setupPivotLow
+
+    if showTriggerLine
+        if not na(triggerLinePrice)
+            setupTrigLine := line.new(bar_index, triggerLinePrice, bar_index + 1, triggerLinePrice, xloc = xloc.bar_index, extend = extend.right, color = setupShortColor, width = 1, style = line.style_dashed)
+
+    if showSetupLabel
+        label.new(bar_index, high, 'SETUP S', xloc = xloc.bar_index, yloc = yloc.abovebar, style = label.style_label_down, color = color.new(setupShortColor, 0), textcolor = color.white, size = size.small)
+
+    if almTT
+        if almTTSetup
+            if almTTShort
+                alert(sym + ' ' + f_tfJP(selTF) + ' Touch Trigger SETUP S / Mode ' + triggerMode + ' @MTA ' + str.tostring(setupMta), alert.freq_once_per_bar_close)
+
+expiredSetup = false
+if waitingTrigger
+    if not na(setupBar)
+        barsFromSetup = bar_index - setupBar
+        if barsFromSetup > expireBars
+            expiredSetup := true
+
+directionInvalid = false
+if waitingTrigger
+    if setupDir == 1
+        if na(sTr)
+            directionInvalid := true
+        else
+            if sTr != 1
+                directionInvalid := true
+
+    if setupDir == -1
+        if na(sTr)
+            directionInvalid := true
+        else
+            if sTr != -1
+                directionInvalid := true
+
+canCheckTrigger = false
+if barstate.isconfirmed
+    if waitingTrigger
+        if not na(setupBar)
+            if bar_index > setupBar
+                if flatPosition
+                    canCheckTrigger := true
+
+longEntrySignal = false
+shortEntrySignal = false
+
+if canCheckTrigger
+    if setupDir == 1
+        if triggerMode == 'Setup Candle Break'
+            if not na(setupHigh)
+                if close > setupHigh
+                    longEntrySignal := true
+
+        if triggerMode == 'EMA Reclaim'
+            if not na(emaVal)
+                if not na(emaVal[1])
+                    if not na(close[1])
+                        if close > emaVal
+                            if close[1] <= emaVal[1]
+                                longEntrySignal := true
+
+        if triggerMode == 'LTF Pivot Break'
+            if not na(setupPivotHigh)
+                if close > setupPivotHigh
+                    longEntrySignal := true
+
+    if setupDir == -1
+        if triggerMode == 'Setup Candle Break'
+            if not na(setupLow)
+                if close < setupLow
+                    shortEntrySignal := true
+
+        if triggerMode == 'EMA Reclaim'
+            if not na(emaVal)
+                if not na(emaVal[1])
+                    if not na(close[1])
+                        if close < emaVal
+                            if close[1] >= emaVal[1]
+                                shortEntrySignal := true
+
+        if triggerMode == 'LTF Pivot Break'
+            if not na(setupPivotLow)
+                if close < setupPivotLow
+                    shortEntrySignal := true
+
+minStopDistance = syminfo.mintick * minRiskTick
+riskAmount = strategy.equity * riskPct / 100.0
+
+longStopPrice = setupLow
+longEntryPriceForCalc = close
+longRiskDistance = float(na)
+longLimitPrice = float(na)
+longQty = float(na)
+longTradeValid = false
+
+if longEntrySignal
+    if not na(longStopPrice)
+        longRiskDistance := longEntryPriceForCalc - longStopPrice
+        if longRiskDistance >= minStopDistance
+            longLimitPrice := longEntryPriceForCalc + longRiskDistance * rr
+            if syminfo.pointvalue > 0
+                longQty := riskAmount / (longRiskDistance * syminfo.pointvalue)
+                if longQty > 0
+                    longTradeValid := true
+
+shortStopPrice = setupHigh
+shortEntryPriceForCalc = close
+shortRiskDistance = float(na)
+shortLimitPrice = float(na)
+shortQty = float(na)
+shortTradeValid = false
+
+if shortEntrySignal
+    if not na(shortStopPrice)
+        shortRiskDistance := shortStopPrice - shortEntryPriceForCalc
+        if shortRiskDistance >= minStopDistance
+            shortLimitPrice := shortEntryPriceForCalc - shortRiskDistance * rr
+            if syminfo.pointvalue > 0
+                shortQty := riskAmount / (shortRiskDistance * syminfo.pointvalue)
+                if shortQty > 0
+                    shortTradeValid := true
+
+if longEntrySignal
+    if longTradeValid
+        strategy.entry('Long', strategy.long, qty = longQty)
+        strategy.exit('Long Exit', from_entry = 'Long', stop = longStopPrice, limit = longLimitPrice)
+
+        if showEntryLabel
+            label.new(bar_index, low, 'ENTRY L', xloc = xloc.bar_index, yloc = yloc.belowbar, style = label.style_label_up, color = color.new(entryLongColor, 0), textcolor = color.white, size = size.normal)
+
+        if showTradeLines
+            if not na(tradeStopLine)
+                line.delete(tradeStopLine)
+                tradeStopLine := na
+            if not na(tradeLimitLine)
+                line.delete(tradeLimitLine)
+                tradeLimitLine := na
+            tradeStopLine := line.new(bar_index, longStopPrice, bar_index + 1, longStopPrice, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.red, 0), width = 1, style = line.style_dotted)
+            tradeLimitLine := line.new(bar_index, longLimitPrice, bar_index + 1, longLimitPrice, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.green, 0), width = 1, style = line.style_dotted)
+
+        if almTT
+            if almTTEntry
+                if almTTLong
+                    alert(sym + ' ' + f_tfJP(selTF) + ' Strategy ENTRY L / Mode ' + triggerMode + ' @' + str.tostring(close) + ' / SL ' + str.tostring(longStopPrice) + ' / TP ' + str.tostring(longLimitPrice), alert.freq_once_per_bar_close)
+
+if shortEntrySignal
+    if shortTradeValid
+        strategy.entry('Short', strategy.short, qty = shortQty)
+        strategy.exit('Short Exit', from_entry = 'Short', stop = shortStopPrice, limit = shortLimitPrice)
+
+        if showEntryLabel
+            label.new(bar_index, high, 'ENTRY S', xloc = xloc.bar_index, yloc = yloc.abovebar, style = label.style_label_down, color = color.new(entryShortColor, 0), textcolor = color.white, size = size.normal)
+
+        if showTradeLines
+            if not na(tradeStopLine)
+                line.delete(tradeStopLine)
+                tradeStopLine := na
+            if not na(tradeLimitLine)
+                line.delete(tradeLimitLine)
+                tradeLimitLine := na
+            tradeStopLine := line.new(bar_index, shortStopPrice, bar_index + 1, shortStopPrice, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.red, 0), width = 1, style = line.style_dotted)
+            tradeLimitLine := line.new(bar_index, shortLimitPrice, bar_index + 1, shortLimitPrice, xloc = xloc.bar_index, extend = extend.right, color = color.new(color.green, 0), width = 1, style = line.style_dotted)
+
+        if almTT
+            if almTTEntry
+                if almTTShort
+                    alert(sym + ' ' + f_tfJP(selTF) + ' Strategy ENTRY S / Mode ' + triggerMode + ' @' + str.tostring(close) + ' / SL ' + str.tostring(shortStopPrice) + ' / TP ' + str.tostring(shortLimitPrice), alert.freq_once_per_bar_close)
+
+if expiredSetup
+    if showExpireLabel
+        label.new(bar_index, close, 'EXPIRE', xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color.new(color.gray, 0), textcolor = color.white, size = size.tiny)
+
+resetSetup = false
+if longTradeValid
+    resetSetup := true
+if shortTradeValid
+    resetSetup := true
+if expiredSetup
+    resetSetup := true
+if directionInvalid
+    resetSetup := true
+
+if resetSetup
+    waitingTrigger := false
+    setupDir       := 0
+    setupBar       := na
+    setupTime      := na
+    setupMta       := na
+    setupHigh      := na
+    setupLow       := na
+    setupPivotHigh := na
+    setupPivotLow  := na
+
+    if not na(setupTrigLine)
+        line.delete(setupTrigLine)
+        setupTrigLine := na
+
+alertcondition(longSetupSignal, title = 'TT SETUP L', message = '{{ticker}} Touch Trigger SETUP L')
+alertcondition(shortSetupSignal, title = 'TT SETUP S', message = '{{ticker}} Touch Trigger SETUP S')
+alertcondition(longTradeValid, title = 'ST ENTRY L', message = '{{ticker}} Strategy ENTRY L')
+alertcondition(shortTradeValid, title = 'ST ENTRY S', message = '{{ticker}} Strategy ENTRY S')
+
+if almChart and not na(cTr) and not na(cTr[1])
+    if cTr[1] == 0 and cTr == 1 and almOccur and almUp
+        alert(sym + ' チャート足MTA 上昇発生 @' + str.tostring(cM), alert.freq_once_per_bar_close)
+
+    if cTr[1] == 0 and cTr == -1 and almOccur and almDn
+        alert(sym + ' チャート足MTA 下降発生 @' + str.tostring(cM), alert.freq_once_per_bar_close)
+
+    if cTr[1] == 1 and cTr == 0 and almBreak and almUp
+        alert(sym + ' チャート足MTA 上昇終了(ブレイク) @' + str.tostring(cM), alert.freq_once_per_bar_close)
+
+    if cTr[1] == -1 and cTr == 0 and almBreak and almDn
+        alert(sym + ' チャート足MTA 下降終了(ブレイク) @' + str.tostring(cM), alert.freq_once_per_bar_close)
+
+if almSel and not na(sTr) and not na(sTr[1])
+    stf = f_tfJP(selTF)
+
+    if sTr[1] == 0 and sTr == 1 and almOccur and almUp
+        alert(sym + ' ' + stf + 'MTA 上昇発生 @' + str.tostring(sM), alert.freq_once_per_bar_close)
+
+    if sTr[1] == 0 and sTr == -1 and almOccur and almDn
+        alert(sym + ' ' + stf + 'MTA 下降発生 @' + str.tostring(sM), alert.freq_once_per_bar_close)
+
+    if sTr[1] == 1 and sTr == 0 and almBreak and almUp
+        alert(sym + ' ' + stf + 'MTA 上昇終了(ブレイク) @' + str.tostring(sM), alert.freq_once_per_bar_close)
+
+    if sTr[1] == -1 and sTr == 0 and almBreak and almDn
+        alert(sym + ' ' + stf + 'MTA 下降終了(ブレイク) @' + str.tostring(sM), alert.freq_once_per_bar_close)
