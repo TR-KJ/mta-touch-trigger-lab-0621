@@ -1,0 +1,549 @@
+//@version=5
+strategy('MTA Touch Trigger Strategy v1.1 Lite', overlay = true, initial_capital = 1000000, default_qty_type = strategy.fixed, default_qty_value = 1, commission_type = strategy.commission.percent, commission_value = 0.04, slippage = 2, pyramiding = 0, process_orders_on_close = false, calc_on_every_tick = false)
+
+import DevLucem/ZigLib/1 as ZigZag
+
+Depth     = input.int(3, '深さ', minval = 1, step = 1, group = 'ZigZag')
+Deviation = input.int(5, '偏差', minval = 1, step = 1, group = 'ZigZag')
+Backstep  = input.int(3, 'Backstep', minval = 2, step = 1, group = 'ZigZag')
+
+selTFin = input.timeframe('15', '選択足TF', group = 'MTA')
+
+enableTouchSetup = input.bool(true, 'MTA接触セットアップ', group = 'Touch Trigger')
+expireBars = input.int(60, '有効本数', minval = 1, group = 'Touch Trigger')
+
+useMtaHoldFilter = input.bool(true, 'MTA守り足フィルター', group = 'Setup Filter')
+useMtaCloseInvalid = input.bool(true, 'MTA終値ブレイクで無効', group = 'Setup Filter')
+
+triggerMode = input.string('Setup Candle Break', 'トリガー方式', options = ['Setup Candle Break', 'EMA Reclaim', 'LTF Pivot Break'], group = 'Trigger Mode')
+emaLen = input.int(20, 'EMA期間', minval = 1, group = 'EMA Reclaim')
+showEma = input.bool(false, 'EMA表示', group = 'EMA Reclaim')
+pivotLeft = input.int(3, 'Pivot Left', minval = 1, group = 'LTF Pivot Break')
+pivotRight = input.int(3, 'Pivot Right', minval = 1, group = 'LTF Pivot Break')
+
+rr = input.float(1.5, 'RR', minval = 0.1, step = 0.1, group = 'Strategy Risk')
+riskPct = input.float(2.0, '1回リスク％', minval = 0.1, step = 0.1, group = 'Strategy Risk')
+minRiskTick = input.int(1, '最小SL幅 ticks', minval = 1, group = 'Strategy Risk')
+
+emaVal = ta.ema(close, emaLen)
+plot(showEma ? emaVal : na, title = 'Trigger EMA', color = color.new(color.yellow, 0), linewidth = 1)
+
+phRaw = ta.pivothigh(high, pivotLeft, pivotRight)
+plRaw = ta.pivotlow(low, pivotLeft, pivotRight)
+
+var float lastPivotHigh = na
+var float lastPivotLow = na
+
+if not na(phRaw)
+    lastPivotHigh := phRaw
+
+if not na(plRaw)
+    lastPivotLow := plRaw
+
+f_mtaCalc() =>
+    [direction, z1, z2] = ZigZag.zigzag(low, high, Depth, Deviation, Backstep)
+
+    zpx = z2.price
+    zix = z2.index
+    ztm = z2.time
+
+    var array<float> zP = array.new_float()
+    var array<bool> zH = array.new_bool()
+    var array<int> zB = array.new_int()
+    var array<int> zT = array.new_int()
+
+    directionChanged = false
+    if not na(direction)
+        if not na(direction[1])
+            if direction != direction[1]
+                directionChanged := true
+
+    if directionChanged
+        pPrice = zpx[1]
+        pBar = na(zix[1]) ? -1 : int(zix[1])
+        pTime = na(ztm[1]) ? -1 : int(ztm[1])
+        pHigh = direction[1] > 0
+
+        validPivot = false
+        if not na(pPrice)
+            if pBar >= 0
+                validPivot := true
+
+        if validPivot
+            s1 = math.min(array.size(zP), array.size(zH))
+            s2 = math.min(array.size(zB), array.size(zT))
+            arrN = math.min(s1, s2)
+
+            if arrN == 0
+                array.push(zP, pPrice)
+                array.push(zH, pHigh)
+                array.push(zB, pBar)
+                array.push(zT, pTime)
+            else
+                lastIdx = arrN - 1
+                lastBar = array.get(zB, lastIdx)
+                if pBar > lastBar
+                    lastHigh = array.get(zH, lastIdx)
+                    if lastHigh == pHigh
+                        prevP = array.get(zP, lastIdx)
+                        better = pHigh ? pPrice > prevP : pPrice < prevP
+                        if better
+                            array.set(zP, lastIdx, pPrice)
+                            array.set(zB, lastIdx, pBar)
+                            array.set(zT, lastIdx, pTime)
+                    else
+                        array.push(zP, pPrice)
+                        array.push(zH, pHigh)
+                        array.push(zB, pBar)
+                        array.push(zT, pTime)
+
+    var int trend = 0
+    var float aPx = na
+    var int aBar = -1
+    var float mta = na
+    var int mtaTime = -1
+
+    n1 = math.min(array.size(zP), array.size(zH))
+    n2 = math.min(array.size(zB), array.size(zT))
+    n = math.min(n1, n2)
+
+    if trend == 0
+        if n >= 3
+            lastIsHigh = array.get(zH, n - 1)
+            if not lastIsHigh
+                a1P = array.get(zP, n - 3)
+                h1P = array.get(zP, n - 2)
+                a2P = array.get(zP, n - 1)
+                if a2P > a1P
+                    if close > h1P
+                        trend := 1
+                        aPx := h1P
+                        aBar := array.get(zB, n - 2)
+                        mta := a2P
+                        mtaTime := array.get(zT, n - 1)
+
+            if trend == 0
+                if lastIsHigh
+                    h1P = array.get(zP, n - 3)
+                    l1P = array.get(zP, n - 2)
+                    h2P = array.get(zP, n - 1)
+                    if h2P < h1P
+                        if close < l1P
+                            trend := -1
+                            aPx := l1P
+                            aBar := array.get(zB, n - 2)
+                            mta := h2P
+                            mtaTime := array.get(zT, n - 1)
+
+    if trend == 1
+        if not na(mta)
+            if close < mta
+                trend := 0
+                aPx := na
+                aBar := -1
+            else
+                if not na(aPx)
+                    if close > aPx
+                        bIdx = -1
+
+                        if n > 0
+                            for j = 0 to n - 1 by 1
+                                zhj = array.get(zH, j)
+                                zbj = array.get(zB, j)
+                                zpj = array.get(zP, j)
+                                if zhj
+                                    if zbj > aBar
+                                        if zpj > aPx
+                                            bIdx := j
+
+                        if bIdx >= 0
+                            nlo = float(na)
+                            nix = -1
+                            bB = array.get(zB, bIdx)
+
+                            if n > 0
+                                for j = 0 to n - 1 by 1
+                                    zhj = array.get(zH, j)
+                                    zbj = array.get(zB, j)
+                                    zpj = array.get(zP, j)
+                                    if not zhj
+                                        if zbj > aBar
+                                            if zbj < bB
+                                                if na(nlo)
+                                                    nlo := zpj
+                                                    nix := j
+                                                else
+                                                    if zpj < nlo
+                                                        nlo := zpj
+                                                        nix := j
+
+                            if nix != -1
+                                mta := nlo
+                                mtaTime := array.get(zT, nix)
+                                aPx := array.get(zP, bIdx)
+                                aBar := bB
+                        else
+                            rlo = float(na)
+                            rix = -1
+
+                            if n > 0
+                                for j = 0 to n - 1 by 1
+                                    zhj = array.get(zH, j)
+                                    zbj = array.get(zB, j)
+                                    zpj = array.get(zP, j)
+                                    if not zhj
+                                        if zbj > aBar
+                                            if na(rlo)
+                                                rlo := zpj
+                                                rix := j
+                                            else
+                                                if zpj < rlo
+                                                    rlo := zpj
+                                                    rix := j
+
+                            if rix != -1
+                                updateRlo = false
+                                if na(mta)
+                                    updateRlo := true
+                                else
+                                    if rlo != mta
+                                        updateRlo := true
+
+                                if updateRlo
+                                    mta := rlo
+                                    mtaTime := array.get(zT, rix)
+
+    if trend == -1
+        if not na(mta)
+            if close > mta
+                trend := 0
+                aPx := na
+                aBar := -1
+            else
+                if not na(aPx)
+                    if close < aPx
+                        bIdx = -1
+
+                        if n > 0
+                            for j = 0 to n - 1 by 1
+                                zhj = array.get(zH, j)
+                                zbj = array.get(zB, j)
+                                zpj = array.get(zP, j)
+                                if not zhj
+                                    if zbj > aBar
+                                        if zpj < aPx
+                                            bIdx := j
+
+                        if bIdx >= 0
+                            nhi = float(na)
+                            nix = -1
+                            bB = array.get(zB, bIdx)
+
+                            if n > 0
+                                for j = 0 to n - 1 by 1
+                                    zhj = array.get(zH, j)
+                                    zbj = array.get(zB, j)
+                                    zpj = array.get(zP, j)
+                                    if zhj
+                                        if zbj > aBar
+                                            if zbj < bB
+                                                if na(nhi)
+                                                    nhi := zpj
+                                                    nix := j
+                                                else
+                                                    if zpj > nhi
+                                                        nhi := zpj
+                                                        nix := j
+
+                            if nix != -1
+                                mta := nhi
+                                mtaTime := array.get(zT, nix)
+                                aPx := array.get(zP, bIdx)
+                                aBar := bB
+                        else
+                            rhi = float(na)
+                            rix = -1
+
+                            if n > 0
+                                for j = 0 to n - 1 by 1
+                                    zhj = array.get(zH, j)
+                                    zbj = array.get(zB, j)
+                                    zpj = array.get(zP, j)
+                                    if zhj
+                                        if zbj > aBar
+                                            if na(rhi)
+                                                rhi := zpj
+                                                rix := j
+                                            else
+                                                if zpj > rhi
+                                                    rhi := zpj
+                                                    rix := j
+
+                            if rix != -1
+                                updateRhi = false
+                                if na(mta)
+                                    updateRhi := true
+                                else
+                                    if rhi != mta
+                                        updateRhi := true
+
+                                if updateRhi
+                                    mta := rhi
+                                    mtaTime := array.get(zT, rix)
+
+    ended = false
+    if trend == 0
+        if not na(mta)
+            ended := true
+
+    [mta, trend, mtaTime, ended]
+
+selTF = selTFin == '' ? timeframe.period : selTFin
+
+[sM, sTr, sMt, sEnd] = request.security(syminfo.tickerid, selTF, f_mtaCalc(), lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+
+var bool waitingTrigger = false
+var int setupDir = 0
+var int setupBar = na
+var float setupMta = na
+var float setupHigh = na
+var float setupLow = na
+var float setupPivotHigh = na
+var float setupPivotLow = na
+
+isSelEnded = false
+if not na(sEnd)
+    if sEnd
+        isSelEnded := true
+
+mtaTouched = false
+if not na(sM)
+    if low <= sM
+        if high >= sM
+            mtaTouched := true
+
+longMtaHeld = false
+if not na(sM)
+    if low <= sM
+        if close > sM
+            longMtaHeld := true
+
+shortMtaHeld = false
+if not na(sM)
+    if high >= sM
+        if close < sM
+            shortMtaHeld := true
+
+flatPosition = false
+if strategy.position_size == 0
+    flatPosition := true
+
+longSetupSignal = false
+shortSetupSignal = false
+
+if barstate.isconfirmed
+    if enableTouchSetup
+        if flatPosition
+            if not waitingTrigger
+                if not isSelEnded
+                    if not na(sTr)
+                        if sTr == 1
+                            if useMtaHoldFilter
+                                if longMtaHeld
+                                    longSetupSignal := true
+                            else
+                                if mtaTouched
+                                    longSetupSignal := true
+
+                        if sTr == -1
+                            if useMtaHoldFilter
+                                if shortMtaHeld
+                                    shortSetupSignal := true
+                            else
+                                if mtaTouched
+                                    shortSetupSignal := true
+
+if longSetupSignal
+    waitingTrigger := true
+    setupDir := 1
+    setupBar := bar_index
+    setupMta := sM
+    setupHigh := high
+    setupLow := low
+    setupPivotHigh := lastPivotHigh
+    setupPivotLow := lastPivotLow
+
+if shortSetupSignal
+    waitingTrigger := true
+    setupDir := -1
+    setupBar := bar_index
+    setupMta := sM
+    setupHigh := high
+    setupLow := low
+    setupPivotHigh := lastPivotHigh
+    setupPivotLow := lastPivotLow
+
+expiredSetup = false
+if waitingTrigger
+    if not na(setupBar)
+        barsFromSetup = bar_index - setupBar
+        if barsFromSetup > expireBars
+            expiredSetup := true
+
+directionInvalid = false
+if waitingTrigger
+    if setupDir == 1
+        if na(sTr)
+            directionInvalid := true
+        else
+            if sTr != 1
+                directionInvalid := true
+
+    if setupDir == -1
+        if na(sTr)
+            directionInvalid := true
+        else
+            if sTr != -1
+                directionInvalid := true
+
+mtaCloseInvalid = false
+if barstate.isconfirmed
+    if useMtaCloseInvalid
+        if waitingTrigger
+            if not na(setupMta)
+                if setupDir == 1
+                    if close < setupMta
+                        mtaCloseInvalid := true
+
+                if setupDir == -1
+                    if close > setupMta
+                        mtaCloseInvalid := true
+
+canCheckTrigger = false
+if barstate.isconfirmed
+    if waitingTrigger
+        if not na(setupBar)
+            if bar_index > setupBar
+                if flatPosition
+                    if not mtaCloseInvalid
+                        canCheckTrigger := true
+
+longEntrySignal = false
+shortEntrySignal = false
+
+if canCheckTrigger
+    if setupDir == 1
+        if triggerMode == 'Setup Candle Break'
+            if not na(setupHigh)
+                if close > setupHigh
+                    longEntrySignal := true
+
+        if triggerMode == 'EMA Reclaim'
+            if not na(emaVal)
+                if not na(emaVal[1])
+                    if not na(close[1])
+                        if close > emaVal
+                            if close[1] <= emaVal[1]
+                                longEntrySignal := true
+
+        if triggerMode == 'LTF Pivot Break'
+            if not na(setupPivotHigh)
+                if close > setupPivotHigh
+                    longEntrySignal := true
+
+    if setupDir == -1
+        if triggerMode == 'Setup Candle Break'
+            if not na(setupLow)
+                if close < setupLow
+                    shortEntrySignal := true
+
+        if triggerMode == 'EMA Reclaim'
+            if not na(emaVal)
+                if not na(emaVal[1])
+                    if not na(close[1])
+                        if close < emaVal
+                            if close[1] >= emaVal[1]
+                                shortEntrySignal := true
+
+        if triggerMode == 'LTF Pivot Break'
+            if not na(setupPivotLow)
+                if close < setupPivotLow
+                    shortEntrySignal := true
+
+minStopDistance = syminfo.mintick * minRiskTick
+riskAmount = strategy.equity * riskPct / 100.0
+
+longStopPrice = setupLow
+longEntryPriceForCalc = close
+longRiskDistance = float(na)
+longLimitPrice = float(na)
+longQty = float(na)
+longTradeValid = false
+
+if longEntrySignal
+    if not na(longStopPrice)
+        longRiskDistance := longEntryPriceForCalc - longStopPrice
+        if longRiskDistance >= minStopDistance
+            longLimitPrice := longEntryPriceForCalc + longRiskDistance * rr
+            if syminfo.pointvalue > 0
+                longQty := riskAmount / (longRiskDistance * syminfo.pointvalue)
+                if longQty > 0
+                    longTradeValid := true
+
+shortStopPrice = setupHigh
+shortEntryPriceForCalc = close
+shortRiskDistance = float(na)
+shortLimitPrice = float(na)
+shortQty = float(na)
+shortTradeValid = false
+
+if shortEntrySignal
+    if not na(shortStopPrice)
+        shortRiskDistance := shortStopPrice - shortEntryPriceForCalc
+        if shortRiskDistance >= minStopDistance
+            shortLimitPrice := shortEntryPriceForCalc - shortRiskDistance * rr
+            if syminfo.pointvalue > 0
+                shortQty := riskAmount / (shortRiskDistance * syminfo.pointvalue)
+                if shortQty > 0
+                    shortTradeValid := true
+
+if longTradeValid
+    strategy.entry('Long', strategy.long, qty = longQty)
+    strategy.exit('Long Exit', from_entry = 'Long', stop = longStopPrice, limit = longLimitPrice)
+
+if shortTradeValid
+    strategy.entry('Short', strategy.short, qty = shortQty)
+    strategy.exit('Short Exit', from_entry = 'Short', stop = shortStopPrice, limit = shortLimitPrice)
+
+invalidTradeSignal = false
+if longEntrySignal
+    if not longTradeValid
+        invalidTradeSignal := true
+
+if shortEntrySignal
+    if not shortTradeValid
+        invalidTradeSignal := true
+
+resetSetup = false
+if longTradeValid
+    resetSetup := true
+if shortTradeValid
+    resetSetup := true
+if invalidTradeSignal
+    resetSetup := true
+if expiredSetup
+    resetSetup := true
+if directionInvalid
+    resetSetup := true
+if mtaCloseInvalid
+    resetSetup := true
+
+if resetSetup
+    waitingTrigger := false
+    setupDir := 0
+    setupBar := na
+    setupMta := na
+    setupHigh := na
+    setupLow := na
+    setupPivotHigh := na
+    setupPivotLow := na
